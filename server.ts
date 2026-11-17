@@ -420,7 +420,8 @@ app.get('/api/tmdb/movie/:tmdbId', async (req: Request, res: Response) => {
     const mapped = tmdb.mapToMovieMetadata(details);
     const localMovie = db.getMovieByTmdbId(tmdbId) || null;
 
-    // Cache-first multi-provider association — never block details on live provider search
+    // Resolve providers before responding. On Vercel serverless, fire-and-forget
+    // matching is killed when the response ends — so "Streaming unavailable" stuck.
     const matchInput = {
       tmdbId,
       title: mapped.title,
@@ -432,7 +433,18 @@ app.get('/api/tmdb/movie/:tmdbId', async (req: Request, res: Response) => {
       mediaType: 'movie' as const
     };
     const cachedAssoc = ensureStreamAssociationCached(matchInput);
-    const stream = publicStreamPayload(cachedAssoc);
+    let stream = publicStreamPayload(cachedAssoc);
+    if (!(stream.hasStream && stream.playerPath)) {
+      try {
+        await resolveProvidersForMovie(matchInput);
+        stream = publicStreamPayload(db.getStreamAssociationByTmdbId(tmdbId));
+      } catch (matchErr: any) {
+        console.warn(
+          '[providers] details match failed:',
+          matchErr?.message || matchErr
+        );
+      }
+    }
 
     res.json({
       success: true,

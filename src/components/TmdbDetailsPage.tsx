@@ -324,6 +324,8 @@ export const TmdbDetailsPage: React.FC<TmdbDetailsPageProps> = ({
                 title={details.title}
                 playerPath={streamInfo.playerPath}
                 providerName={streamInfo.providerName}
+                adSlots={adSlots}
+                adSettings={adSettings}
               />
             </div>
           )}

@@ -1,5 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { AlertCircle, Loader2, Maximize2, Minimize2, Play, RefreshCw } from 'lucide-react';
+import { AlertCircle, Loader2, Maximize2, Minimize2, RefreshCw } from 'lucide-react';
+import { AdSlot, AdSettings } from '../types.ts';
+import { api } from '../services/api.ts';
+import { canShowPlayerOwnerAd, openOwnerAdOnce } from '../utils/cardClickAdGate.ts';
 
 interface ProviderPlayerProps {
   tmdbId: number;
@@ -7,6 +10,8 @@ interface ProviderPlayerProps {
   playerPath: string;
   providerName?: string | null;
   className?: string;
+  adSlots?: AdSlot[];
+  adSettings?: AdSettings;
 }
 
 /**
@@ -14,30 +19,36 @@ interface ProviderPlayerProps {
  * Server gates embeds behind Content Compliance (Verified providers / not disputed).
  * Loads a same-origin backend shell so provider secrets never ship in the React bundle.
  * Note: providers detect & block iframe sandbox — do not set sandbox on this frame.
+ *
+ * First click (hidden layer): owner ad → then unlock so provider ads/play receive later clicks.
  */
 export const ProviderPlayer: React.FC<ProviderPlayerProps> = ({
   tmdbId,
   title,
   playerPath,
   providerName,
-  className = ''
+  className = '',
+  adSlots = [],
+  adSettings
 }) => {
   const containerRef = useRef<HTMLElement | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  /** First click often triggers provider popup ads — gate until the user starts playback. */
-  const [playbackArmed, setPlaybackArmed] = useState(false);
+  const ownerGateNeeded = canShowPlayerOwnerAd(adSettings, adSlots);
+  const [ownerAdDone, setOwnerAdDone] = useState(!ownerGateNeeded);
 
   const src = `${playerPath}${playerPath.includes('?') ? '&' : '?'}v=${reloadKey}`;
   const label = providerName || 'Provider';
+  const itemKey = `provider-player-${tmdbId}`;
 
   useEffect(() => {
     setLoading(true);
     setError(null);
-    setPlaybackArmed(false);
-  }, [tmdbId, playerPath, reloadKey]);
+    const needsGate = canShowPlayerOwnerAd(adSettings, adSlots);
+    setOwnerAdDone(!needsGate);
+  }, [tmdbId, playerPath, reloadKey, adSettings, adSlots]);
 
   useEffect(() => {
     const onFullscreenChange = () => {
@@ -64,12 +75,18 @@ export const ProviderPlayer: React.FC<ProviderPlayerProps> = ({
   const handleRetry = () => {
     setError(null);
     setLoading(true);
-    setPlaybackArmed(false);
     setReloadKey(k => k + 1);
   };
 
-  const armPlayback = () => {
-    setPlaybackArmed(true);
+  const handleOwnerPreRoll = () => {
+    const device = window.innerWidth < 768 ? 'mobile' : 'desktop';
+    const result = openOwnerAdOnce(itemKey, adSettings, adSlots);
+    if (result.opened && result.slot) {
+      void api.recordAdClick(result.slot.id, device);
+      void api.recordAdImpression(result.slot.id, device);
+    }
+    // Unlock provider embed whether or not a tab opened (no URL / already used → still play)
+    setOwnerAdDone(true);
   };
 
   const toggleFullscreen = async () => {
@@ -109,7 +126,6 @@ export const ProviderPlayer: React.FC<ProviderPlayerProps> = ({
       }
     } catch (err) {
       console.error('Fullscreen failed:', err);
-      // Fallback: open same-origin player shell in a new window
       window.open(src, '_blank', 'noopener,noreferrer');
     }
   };
@@ -192,21 +208,15 @@ export const ProviderPlayer: React.FC<ProviderPlayerProps> = ({
           }}
         />
 
-        {!loading && !error && !playbackArmed && (
+        {/* Hidden owner pre-roll: first click → your ad, then provider embed/ads */}
+        {!loading && !error && !ownerAdDone && (
           <button
             type="button"
-            onClick={armPlayback}
-            className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-black/75 text-white cursor-pointer border-0"
-            aria-label={`Start watching ${title}`}
-          >
-            <span className="flex h-16 w-16 items-center justify-center rounded-full bg-red-600 shadow-lg shadow-red-900/40">
-              <Play className="h-7 w-7 fill-white translate-x-0.5" />
-            </span>
-            <span className="text-sm font-semibold tracking-wide">Click to play</span>
-            <span className="max-w-[16rem] text-[11px] text-neutral-400 text-center px-4">
-              Tap once to start — blocks the first provider ad popup
-            </span>
-          </button>
+            onClick={handleOwnerPreRoll}
+            className="absolute inset-0 z-30 cursor-pointer border-0 bg-transparent"
+            aria-label={`Continue to watch ${title}`}
+            title=""
+          />
         )}
       </div>
     </section>
